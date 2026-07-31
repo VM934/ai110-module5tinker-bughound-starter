@@ -1,109 +1,112 @@
 # 🐶 BugHound
 
-BugHound is a small, agent-style debugging tool. It analyzes a Python code snippet, proposes a fix, and runs basic reliability checks before deciding whether the fix is safe to apply automatically.
+BugHound is a small agentic debugging system for short Python snippets. It
+plans an analysis, detects issues, proposes a minimal fix, evaluates the
+change, and then decides whether to allow an automatic fix or require human
+review.
 
----
+This fork completes the AI110 Module 5 Tinker with an emphasis on cautious,
+reproducible behavior.
 
-## What BugHound Does
+## Agent workflow
 
-Given a short Python snippet, BugHound:
+1. **Plan** — identify the scan-and-fix workflow.
+2. **Analyze** — use deterministic heuristics or Gemini.
+3. **Act** — propose a minimal rewrite.
+4. **Test** — check severity, syntax, behavior signals, and change size.
+5. **Reflect** — auto-fix only when every guardrail allows it.
 
-1. **Analyzes** the code for potential issues  
-   - Uses heuristics in offline mode  
-   - Uses Gemini when API access is enabled  
+Gemini is a tool inside the workflow, not the final authority. Invalid JSON,
+unknown severity values, unusable code, and API failures all trigger a
+deterministic fallback.
 
-2. **Proposes a fix**  
-   - Either heuristic-based or LLM-generated  
-   - Attempts minimal, behavior-preserving changes  
+## Tinker changes
 
-3. **Assesses risk**  
-   - Scores the fix  
-   - Flags high-risk changes  
-   - Decides whether the fix should be auto-applied or reviewed by a human  
+- **Part 2 — analysis reliability**
+  - Rejects any model issue whose severity is not `Low`, `Medium`, or `High`.
+  - Rejects a model-generated fix that is not valid Python.
+- **Part 3 — safer decision policy**
+  - Requires human review for every Medium- or High-severity issue, even if a
+    future scoring change leaves the numeric score in the low-risk band.
+- **Part 4 — guardrail and tests**
+  - Rejects syntactically invalid fixes.
+  - Requires human review when a fix changes more than 50% of the content.
+  - Adds deterministic tests for invalid severity, invalid Python, the
+    severity policy, and over-editing.
+- **Part 5 — documentation**
+  - Completes `model_card.md` with actual offline evaluation results, failure
+    modes, tradeoffs, and human-in-the-loop triggers.
 
-4. **Shows its work**  
-   - Displays detected issues  
-   - Shows a diff between original and fixed code  
-   - Logs each agent step
-
----
+The fork also fixes two starter-level problems: the UI now uses the real
+offline agent path instead of a mock LLM path, and a clean virtual environment
+can import and run the test suite through `pyproject.toml`.
 
 ## Setup
 
-### 1. Create a virtual environment (recommended)
-
 ```bash
-python -m venv .venv
-source .venv/bin/activate   # macOS/Linux
-# or
-.venv\Scripts\activate      # Windows
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
 ```
 
-### 2. Install dependencies
+## Run offline
 
-```bash
-pip install -r requirements.txt
-```
-
----
-
-## Running in Offline (Heuristic) Mode
-
-No API key required.
+No key or network connection is required:
 
 ```bash
 streamlit run bughound_app.py
 ```
 
-In the sidebar, select:
+Select **Heuristic only (no API)** in the sidebar.
 
-* **Model mode:** Heuristic only (no API)
+## Run with Gemini
 
-This mode uses simple pattern-based rules and is useful for testing the workflow without network access.
-
----
-
-## Running with Gemini
-
-### 1. Set up your API key
-
-Copy the example file:
+Create a local environment file and add your own key:
 
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env` and add your Gemini API key:
-
 ```text
 GEMINI_API_KEY=your_real_key_here
 ```
 
-### 2. Run the app
+The `.env` file is ignored by Git and must never be committed. Select
+**Gemini (requires API key)** in the app and use the limited free-tier requests
+intentionally.
+
+## Tests
 
 ```bash
-streamlit run bughound_app.py
+pytest -q
 ```
 
-In the sidebar, select:
+Verified result:
 
-* **Model mode:** Gemini (requires API key)
-* Choose a Gemini model and temperature
+```text
+.............                                                            [100%]
+13 passed in 0.03s
+```
 
-BugHound will now use Gemini for analysis and fix generation, while still applying local reliability checks.
+The tests cover the workflow shape, heuristic analysis/fixing, parse fallback,
+severity-contract fallback, invalid-code fallback, risk scoring, missing
+returns, review-required severities, and the large-rewrite guardrail.
 
----
-
-## Running Tests
-
-Tests focus on **reliability logic** and **agent behavior**, not the UI.
+## Reproducible offline evaluation
 
 ```bash
-pytest
+python evaluate_samples.py
 ```
 
-You should see tests covering:
+```text
+| Sample | Issues | Risk | Score | Auto-fix | Change ratio |
+|---|---:|---|---:|---|---:|
+| cleanish.py | 0 | low | 100 | True | 0.00 |
+| flaky_try_except.py | 1 | medium | 55 | False | 0.11 |
+| mixed_issues.py | 3 | high | 30 | False | 0.30 |
+| print_spam.py | 1 | low | 95 | True | 0.44 |
+```
 
-* Risk scoring and guardrails
-* Heuristic fallbacks when LLM output is invalid
-* End-to-end agent workflow shape
+These results show that the low-impact print rewrite can proceed, while the
+bare-exception and mixed-issue samples require a person. See
+`model_card.md` for the limitations behind those decisions.

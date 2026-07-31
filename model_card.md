@@ -1,92 +1,158 @@
-# BugHound Mini Model Card (Reflection)
+# BugHound Mini Model Card
 
-Fill this out after you run BugHound in **both** modes (Heuristic and Gemini).
+## 1. System overview
 
----
+**Name:** BugHound
 
-## 1) What is this system?
+**Core purpose:** BugHound analyzes a short Python snippet, drafts a targeted
+fix, evaluates the risk of that change, and decides whether the result can be
+auto-fixed or needs human review.
 
-**Name:** BugHound  
-**Purpose:** Analyze a Python snippet, propose a fix, and run reliability checks before suggesting whether the fix should be auto-applied.
+**Intended users:** Students and early-career developers learning how agentic
+workflows, model integration, tests, and guardrails fit together. It is a
+learning tool, not a production code-review or security scanner.
 
-**Intended users:** Students learning agentic workflows and AI reliability concepts.
+## 2. Workflow
 
----
+BugHound runs a five-step loop:
 
-## 2) How does it work?
+1. **Plan:** record the intended scan-and-fix process.
+2. **Analyze:** use three deterministic patterns in offline mode or ask Gemini
+   for a JSON list of issues.
+3. **Act:** use the local fixer or ask Gemini for a full rewritten snippet.
+4. **Test:** score severity and inspect structural risks, Python syntax,
+   missing returns, and the size of the change.
+5. **Reflect:** allow an auto-fix only if the risk policy and all hard
+   guardrails agree.
 
-Describe the workflow in your own words (plan → analyze → act → test → reflect).  
-Include what is done by heuristics vs what is done by Gemini (if enabled).
+The heuristic analyzer recognizes `print(`, bare `except:`, and `TODO`.
+Gemini mode sends prompt templates from `prompts/` to the model. If a model
+call fails, the response is not valid JSON, a severity is outside the contract,
+or a proposed fix is not valid Python, BugHound falls back to deterministic
+behavior. The model can suggest; the code makes the trust decision.
 
----
+## 3. Inputs and outputs
 
-## 3) Inputs and outputs
+I ran the deterministic evaluation with:
 
-**Inputs:**
+```bash
+python evaluate_samples.py
+```
 
-- What kind of code snippets did you try?
-- What was the “shape” of the input (short scripts, functions, try/except blocks, etc.)?
+| Input | Shape | Issues | Risk | Score | Auto-fix |
+|---|---|---:|---|---:|---|
+| `cleanish.py` | Function using logging | 0 | low | 100 | yes; no change |
+| `flaky_try_except.py` | File read in a bare try/except | 1 | medium | 55 | no |
+| `mixed_issues.py` | TODO, print, division, bare except | 3 | high | 30 | no |
+| `print_spam.py` | Small function with two prints | 1 | low | 95 | yes |
 
-**Outputs:**
+Outputs include a structured issue list, full proposed code, a unified diff in
+the UI, a risk report, the auto-fix decision, and a trace for every workflow
+stage.
 
-- What types of issues were detected?
-- What kinds of fixes were proposed?
-- What did the risk report show?
+## 4. Reliability and safety rules
 
----
+### Missing-return rule
 
-## 4) Reliability and safety rules
+- **Check:** subtract 30 points if the original contains `return` and the fix
+  does not.
+- **Why it matters:** removing a return frequently changes a function’s public
+  behavior.
+- **Possible false positive:** a correct refactor might move the return into a
+  helper and still preserve behavior.
+- **Possible false negative:** a fix can retain the word `return` while
+  returning the wrong value.
 
-List at least **two** reliability rules currently used in `assess_risk`. For each:
+### Severity rule
 
-- What does the rule check?
-- Why might that check matter for safety or correctness?
-- What is a false positive this rule could cause?
-- What is a false negative this rule could miss?
+- **Check:** Low, Medium, and High issues deduct 5, 20, and 40 points.
+  Medium or High also forces human review.
+- **Why it matters:** a serious or ambiguous issue should not be silently
+  rewritten merely because the aggregate score looks acceptable.
+- **Possible false positive:** a deliberately broad exception at an application
+  boundary may be labeled High even when it is intentional.
+- **Possible false negative:** an important logic bug that neither analyzer
+  detects receives no severity at all.
 
----
+### Syntax and change-size guardrails
 
-## 5) Observed failure modes
+- Proposed code that does not compile is always High risk and never auto-fixed.
+- A change ratio above 50% requires human review even if the score remains in
+  the low-risk band.
 
-Provide at least **two** examples:
+The size rule may flag a safe formatting change, but that is an acceptable
+false positive for a cautious teaching tool. It can still miss a dangerous
+one-line semantic change, so it is not a substitute for tests or review.
 
-1. A time BugHound missed an issue it should have caught  
-2. A time BugHound suggested a fix that felt risky, wrong, or unnecessary  
+## 5. Observed failure modes
 
-For each, include the snippet (or describe it) and what went wrong.
+### Missed issue
 
----
+The offline analyzer does not flag this overly broad handler because it only
+recognizes a *bare* `except:`:
 
-## 6) Heuristic vs Gemini comparison
+```python
+try:
+    load_data()
+except Exception:
+    return None
+```
 
-Compare behavior across the two modes:
+That means the system can miss swallowed errors even though they have the same
+operational effect as the pattern it recognizes.
 
-- What did Gemini detect that heuristics did not?
-- What did heuristics catch consistently?
-- How did the proposed fixes differ?
-- Did the risk scorer agree with your intuition?
+### Unnecessary or risky edit
 
----
+A string or comment containing the literal text `print(` can trigger the
+simple substring heuristic even when there is no function call. The fixer also
+uses a direct text replacement, so it can alter that string. The change-size
+guardrail reduces the chance of auto-applying a large version of this error,
+but the detection itself still needs a future token- or AST-aware improvement.
 
-## 7) Human-in-the-loop decision
+### Model-format failure
 
-Describe one scenario where BugHound should **refuse** to auto-fix and require human review.
+An LLM can return readable prose, valid JSON with an unsupported severity such
+as `Critical`, or syntactically broken code. The test suite reproduces all
+three cases without spending API quota and verifies that BugHound falls back or
+refuses to auto-fix.
 
-- What trigger would you add?
-- Where would you implement it (risk_assessor vs agent workflow vs UI)?
-- What message should the tool show the user?
+## 6. Heuristic and Gemini comparison
 
----
+The heuristic path was run directly and is deterministic: it consistently
+finds its three known patterns and produces predictable edits. Its main
+weakness is narrow coverage.
 
-## 8) Improvement idea
+No Gemini API key was stored on this computer, so I did **not** invent a live
+Gemini result. Instead, the Gemini integration boundary was exercised with
+deterministic test clients:
 
-Propose one improvement that would make BugHound more reliable *without* making it dramatically more complex.
+- malformed analysis text causes heuristic fallback;
+- valid JSON with invalid severity causes heuristic fallback;
+- invalid Python from the fixer causes heuristic fallback.
 
-Examples:
+A live Gemini run may find more contextual issues and draft more natural
+repairs, but it can also over-edit or violate the output contract. That
+model-quality comparison remains unverified until the user supplies a private
+Gemini key; the safety behavior around those responses is already tested.
 
-- A better output format and parsing strategy
-- A new guardrail rule + test
-- A more careful “minimal diff” policy
-- Better detection of changes that alter behavior
+## 7. Human-in-the-loop decision
 
-Write your idea clearly and briefly.
+BugHound must refuse to auto-fix when a proposal changes more than half of the
+snippet, contains invalid Python, removes a return, or addresses any Medium- or
+High-severity issue.
+
+The triggers belong in `reliability/risk_assessor.py` because that module is the
+single policy layer shared by offline and Gemini modes. The UI should show:
+
+> Human review required: the proposed fix is too large, invalid, or addresses
+> a non-trivial issue. Review the diff and run project-specific tests before
+> applying it.
+
+## 8. Low-complexity improvement
+
+Replace substring detection and replacement for `print(` with Python’s
+`tokenize` or `ast` module. That would distinguish real calls from examples in
+strings and comments without adding another model call or making the workflow
+much more complex. A focused regression test should prove that
+`message = "call print(x)"` remains unchanged while a real `print(x)` is still
+detected.
