@@ -4,7 +4,7 @@ import streamlit as st
 from dotenv import load_dotenv
 
 from bughound_agent import BugHoundAgent
-from llm_client import GeminiClient, MockClient
+from llm_client import GeminiClient
 
 # ----------------------------
 # App setup
@@ -82,7 +82,6 @@ mode = st.sidebar.selectbox(
     help="Heuristic mode runs fully offline. Gemini mode calls the Gemini API for analysis and fix proposal.",
 )
 
-# [cite_start]UPDATED: Added a warning for free-tier users to manage expectations regarding API limits. [cite: 176, 192]
 if mode == "Gemini (requires API key)":
     st.sidebar.warning("⚠️ Gemini Free Tier: You have a limit of ~20 requests. Use Heuristic mode for initial testing to save your quota.")
 
@@ -118,8 +117,12 @@ client = None
 client_status = ""
 
 if mode == "Heuristic only (no API)":
-    client = MockClient()
-    client_status = "Using MockClient. No network calls."
+    # A missing client is the agent's explicit offline path. Using MockClient
+    # here would still send the workflow through the LLM branches before
+    # falling back, which makes the UI behave differently from true heuristic
+    # mode and can produce a mock comment instead of a useful fix.
+    client = None
+    client_status = "Using deterministic heuristic analysis and fixes. No network calls."
 else:
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
     if not api_key:
@@ -222,9 +225,13 @@ if run_button:
 
     st.divider()
 
-    # [cite_start]UPDATED: Check if a fallback occurred due to API limits/errors and notify the user. [cite: 119, 128]
-    if any("API Error" in log.get("message", "") for log in logs):
-        st.warning("⚠️ API Request Failed: BugHound hit a limit or network error and used heuristic rules instead.")
+    if mode == "Gemini (requires API key)" and any(
+        "falling back" in log.get("message", "").lower() for log in logs
+    ):
+        st.warning(
+            "⚠️ The Gemini result could not be used, so BugHound safely "
+            "fell back to deterministic heuristic rules."
+        )
 
     st.subheader("Proposed fix")
     if not fixed_code.strip():

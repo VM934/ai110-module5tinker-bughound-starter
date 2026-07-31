@@ -1,4 +1,25 @@
+import difflib
 from typing import Dict, List
+
+
+MAX_AUTOFIX_CHANGE_RATIO = 0.5
+
+
+def _change_ratio(original_lines: List[str], fixed_lines: List[str]) -> float:
+    """Return the fraction of content changed between two line sequences."""
+    if not original_lines:
+        return 1.0 if fixed_lines else 0.0
+    matcher = difflib.SequenceMatcher(a=original_lines, b=fixed_lines)
+    return 1.0 - matcher.ratio()
+
+
+def _is_valid_python(code: str) -> bool:
+    """Return whether code compiles as Python without executing it."""
+    try:
+        compile(code, "<bughound-risk-check>", "exec")
+    except (SyntaxError, ValueError, TypeError):
+        return False
+    return True
 
 
 def assess_risk(
@@ -29,6 +50,16 @@ def assess_risk(
 
     original_lines = original_code.strip().splitlines()
     fixed_lines = fixed_code.strip().splitlines()
+    change_ratio = _change_ratio(original_lines, fixed_lines)
+
+    if not _is_valid_python(fixed_code):
+        return {
+            "score": 0,
+            "level": "high",
+            "reasons": ["Proposed fix is not valid Python."],
+            "should_autofix": False,
+            "change_ratio": change_ratio,
+        }
 
     # ----------------------------
     # Issue severity based risk
@@ -82,6 +113,24 @@ def assess_risk(
     # ----------------------------
     should_autofix = level == "low"
 
+    # Medium and High issues require human review even if future scoring
+    # changes happen to leave the numeric score in the low-risk band.
+    has_review_severity = any(
+        str(issue.get("severity", "")).lower() in {"medium", "high"}
+        for issue in issues
+    )
+    if should_autofix and has_review_severity:
+        should_autofix = False
+        reasons.append("Medium or High severity issue present; human review required.")
+
+    # A large rewrite is difficult to review and more likely to alter behavior.
+    # Hold it for a person even when the issue itself is low severity.
+    if should_autofix and change_ratio > MAX_AUTOFIX_CHANGE_RATIO:
+        should_autofix = False
+        reasons.append(
+            f"Fix changes {int(change_ratio * 100)}% of the content; human review required."
+        )
+
     if not reasons:
         reasons.append("No significant risks detected.")
 
@@ -90,4 +139,5 @@ def assess_risk(
         "level": level,
         "reasons": reasons,
         "should_autofix": should_autofix,
+        "change_ratio": change_ratio,
     }

@@ -41,22 +41,16 @@ class GeminiClient:
 
     def complete(self, system_prompt: str, user_prompt: str) -> str:
         """
-        Sends a single request to Gemini.
+        Send a single request to Gemini.
 
-        If an error occurs, it returns an empty string, triggering the agent's
-        heuristic fallback logic.
+        Errors intentionally propagate to BugHoundAgent, which records the
+        failure in its trace and selects the deterministic fallback.
         """
-        try:
-            merged_prompt = f"{system_prompt}\n\n{user_prompt}".strip()
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=merged_prompt,
-            )
+        merged_prompt = f"{system_prompt}\n\n{user_prompt}".strip()
+        response = self.client.models.generate_content(
+            model=self.model_name,
+            contents=merged_prompt,
+        )
 
-            # Defensive: response.text can be None or raise an error if blocked by filters.
-            return response.text or ""
-
-        except Exception:
-            # Returning empty string allows the agent to detect the failure
-            # and switch to offline rules.
-            return ""
+        # Defensive: response.text can be None if the result is blocked.
+        return response.text or ""

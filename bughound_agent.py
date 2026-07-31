@@ -89,6 +89,16 @@ class BugHoundAgent:
             self._log("ANALYZE", "LLM output was not parseable JSON. Falling back to heuristics.")
             return self._heuristic_analyze(code_snippet)
 
+        # The risk scorer only understands this severity contract. Rejecting
+        # structurally valid but out-of-contract output keeps an unexpected
+        # value such as "Critical" from silently bypassing severity rules.
+        if not self._severities_valid(issues):
+            self._log(
+                "ANALYZE",
+                "LLM returned an invalid severity value. Falling back to heuristics.",
+            )
+            return self._heuristic_analyze(code_snippet)
+
         return issues
 
     def propose_fix(self, code_snippet: str, issues: List[Dict[str, str]]) -> str:
@@ -118,6 +128,10 @@ class BugHoundAgent:
 
         if not cleaned:
             self._log("ACT", "LLM returned empty output. Falling back to heuristic fixer.")
+            return self._heuristic_fix(code_snippet, issues)
+
+        if not self._python_syntax_valid(cleaned):
+            self._log("ACT", "LLM returned invalid Python. Falling back to heuristic fixer.")
             return self._heuristic_fix(code_snippet, issues)
 
         return cleaned
@@ -161,7 +175,11 @@ class BugHoundAgent:
         fixed = code
 
         if any(i.get("type") == "Reliability" for i in issues):
-            fixed = re.sub(r"\bexcept\s*:\s*", "except Exception as e:\n        # [BugHound] log or handle the error\n        ", fixed)
+            fixed = re.sub(
+                r"(?m)^(?P<indent>[ \t]*)except\s*:\s*$",
+                r"\g<indent>except Exception:",
+                fixed,
+            )
 
         if any(i.get("type") == "Code Quality" for i in issues):
             if "import logging" not in fixed:
@@ -227,6 +245,19 @@ class BugHoundAgent:
         if match:
             return match.group(1)
         return text
+
+    def _severities_valid(self, issues: List[Dict[str, str]]) -> bool:
+        """Return True only when every issue uses the documented severity values."""
+        allowed = {"low", "medium", "high"}
+        return all(str(issue.get("severity", "")).lower() in allowed for issue in issues)
+
+    def _python_syntax_valid(self, code: str) -> bool:
+        """Check whether a proposed rewrite is syntactically valid Python."""
+        try:
+            compile(code, "<bughound-fix>", "exec")
+        except (SyntaxError, ValueError, TypeError):
+            return False
+        return True
 
     def _can_call_llm(self) -> bool:
         return self.client is not None and hasattr(self.client, "complete")

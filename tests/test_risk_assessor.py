@@ -46,3 +46,50 @@ def test_missing_return_is_penalized():
     )
     assert risk["score"] < 100
     assert any("Return" in r or "return" in r for r in risk["reasons"])
+
+
+def test_medium_severity_requires_human_review_even_with_low_risk_score():
+    code = "def f():\n    # TODO: improve later\n    return True\n"
+    risk = assess_risk(
+        original_code=code,
+        fixed_code=code,
+        issues=[{"type": "Maintainability", "severity": "Medium", "msg": "TODO"}],
+    )
+
+    assert risk["level"] == "low"
+    assert risk["should_autofix"] is False
+    assert any("human review" in reason.lower() for reason in risk["reasons"])
+
+
+def test_large_rewrite_requires_human_review():
+    original = "def greet(name):\n    print('Hello', name)\n    return True\n"
+    fixed = (
+        "import logging\n\n"
+        "def greet(name):\n"
+        "    normalized = str(name).strip()\n"
+        "    logging.info('Hello %s', normalized)\n"
+        "    return bool(normalized)\n"
+    )
+    risk = assess_risk(
+        original_code=original,
+        fixed_code=fixed,
+        issues=[{"type": "Code Quality", "severity": "Low", "msg": "print"}],
+    )
+
+    assert risk["level"] == "low"
+    assert risk["change_ratio"] > 0.5
+    assert risk["should_autofix"] is False
+    assert any("human review" in reason.lower() for reason in risk["reasons"])
+
+
+def test_invalid_python_fix_is_rejected():
+    risk = assess_risk(
+        original_code="def f():\n    return 1\n",
+        fixed_code="def f(:\n    return 1\n",
+        issues=[{"type": "Correctness", "severity": "Low", "msg": "example"}],
+    )
+
+    assert risk["score"] == 0
+    assert risk["level"] == "high"
+    assert risk["should_autofix"] is False
+    assert any("valid Python" in reason for reason in risk["reasons"])
